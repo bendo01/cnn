@@ -199,13 +199,41 @@ fn infer_image(
     let img = img.grayscale();
 
     let mut pixels = Vec::new();
+    let mut sum = 0.0;
     for y in 0..28 {
         for x in 0..28 {
             let p = img.get_pixel(x, y);
-            // Normalize 0..1
-            let val = p.channels()[0] as f32 / 255.0;
+            // Handle alpha: if alpha is low, treat as white (1.0)
+            // Otherwise use grayscale value
+            let alpha = p.channels()[3] as f32 / 255.0;
+            let gray = p.channels()[0] as f32 / 255.0;
+
+            // Blend with white background: result = gray * alpha + 1.0 * (1.0 - alpha)
+            // If it's black (0.0) on transparent, result = 0 * 1 + 1 * 0 = 0 (black).
+            // If it's transparent, result = 0 * 0 + 1 * 1 = 1 (white).
+            let val = gray * alpha + (1.0 - alpha);
+
             pixels.push(val);
+            sum += val;
         }
+    }
+
+    // Check if inversion is needed (if avg > 0.5, it's likely black on white)
+    let avg = sum / (28.0 * 28.0);
+
+    if avg > 0.5 {
+        println!(
+            "Image seems to be black-on-white (avg brightness: {:.2}). Inverting...",
+            avg
+        );
+        for p in &mut pixels {
+            *p = 1.0 - *p;
+        }
+    } else {
+        println!(
+            "Image seems to be white-on-black (avg brightness: {:.2}). No inversion needed.",
+            avg
+        );
     }
 
     // Create tensor [1, 1, 28, 28]
@@ -248,8 +276,6 @@ fn main() -> anyhow::Result<()> {
 
     // build in-mem datasets
     println!("Building in-memory datasets...");
-    let train_imgs_t: Vec<_> = train_imgs_t.into_iter().take(1000).collect();
-    let train_labels_raw: Vec<_> = train_labels_raw.into_iter().take(1000).collect();
     let train_dataset = build_inmem_dataset(train_imgs_t, train_labels_raw);
     let test_dataset = build_inmem_dataset(test_imgs_t, test_labels_raw);
 
@@ -304,7 +330,7 @@ fn main() -> anyhow::Result<()> {
     let mut optimizer = config_optimizer.init();
 
     // training loop
-    let epochs = 1usize;
+    let epochs = 3usize;
     let lr = 1e-3;
 
     for epoch in 1..=epochs {
