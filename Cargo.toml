@@ -1,0 +1,23 @@
+[package]
+name = "cnn"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Burn core (sesuaikan versi bila perlu)
+burn = { version = "0.19", features = ["ndarray", "dataset", "train"] }
+burn-ndarray = "0.19"
+burn-common = "0.19"
+
+# utility
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+dirs = "6.0"
+flate2 = "1.0"
+indicatif = "0.18"
+rand = "0.9"
+ndarray = "0.17"
+anyhow = "1.0"
+
+# untuk load dan resize image
+image = "0.25"
