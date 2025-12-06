@@ -21,3 +21,4 @@ anyhow = "1.0"
 
 # untuk load dan resize image
 image = "0.25"
+burn-autodiff = "0.19"

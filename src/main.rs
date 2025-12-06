@@ -3,20 +3,23 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::PathBuf;
 
-use burn::backend::NdArray;
+use burn::backend::{Autodiff, NdArray};
 use burn::data::dataloader::batcher::Batcher;
 use burn::data::dataloader::DataLoaderBuilder;
 use burn::data::dataset::InMemDataset;
 use burn::module::Module;
 use burn::nn;
+use burn::optim::{AdamConfig, Optimizer};
+
 use burn::tensor::{Int, Tensor};
 
 use flate2::read::GzDecoder;
+use image::{GenericImageView, Pixel};
 use indicatif::ProgressBar;
 use reqwest::blocking::get;
 
-/// Backend alias (NdArray)
-type B = NdArray<f32>;
+/// Backend alias (Autodiff<NdArray>)
+type B = Autodiff<NdArray<f32>>;
 
 /// Paths & MNIST sources
 const MNIST_BASE: &str = "https://storage.googleapis.com/cvdf-datasets/mnist/";
@@ -28,7 +31,6 @@ const TEST_LABELS: &str = "t10k-labels-idx1-ubyte.gz";
 /// --- Utility: download file if not exists
 fn download_if_needed(fname: &str) -> std::io::Result<PathBuf> {
     let dir = PathBuf::from("training_data");
-    // dir.push("mnist_burn_cache"); // No longer needed as we use training_data directly
     fs::create_dir_all(&dir)?;
     let mut path = dir.clone();
     path.push(fname);
@@ -178,6 +180,44 @@ impl<B: burn::tensor::backend::Backend> CnnModel<B> {
     }
 }
 
+fn infer_image(
+    model: &CnnModel<B>,
+    image_path: &str,
+    device: &<B as burn::tensor::backend::Backend>::Device,
+) {
+    println!("Loading {}...", image_path);
+    let img = match image::open(image_path) {
+        Ok(i) => i,
+        Err(e) => {
+            println!("Failed to load image {}: {}", image_path, e);
+            return;
+        }
+    };
+
+    // Resize to 28x28 and grayscale
+    let img = img.resize_exact(28, 28, image::imageops::FilterType::Nearest);
+    let img = img.grayscale();
+
+    let mut pixels = Vec::new();
+    for y in 0..28 {
+        for x in 0..28 {
+            let p = img.get_pixel(x, y);
+            // Normalize 0..1
+            let val = p.channels()[0] as f32 / 255.0;
+            pixels.push(val);
+        }
+    }
+
+    // Create tensor [1, 1, 28, 28]
+    let input_tensor =
+        Tensor::<B, 1>::from_floats(pixels.as_slice(), device).reshape([1, 1, 28, 28]);
+
+    let output = model.forward(input_tensor);
+    let predicted = output.argmax(1).into_scalar() as i32;
+
+    println!("Predicted digit for {}: {}", image_path, predicted);
+}
+
 fn main() -> anyhow::Result<()> {
     println!("MNIST train (Burn 0.19) - start");
 
@@ -208,6 +248,8 @@ fn main() -> anyhow::Result<()> {
 
     // build in-mem datasets
     println!("Building in-memory datasets...");
+    let train_imgs_t: Vec<_> = train_imgs_t.into_iter().take(1000).collect();
+    let train_labels_raw: Vec<_> = train_labels_raw.into_iter().take(1000).collect();
     let train_dataset = build_inmem_dataset(train_imgs_t, train_labels_raw);
     let test_dataset = build_inmem_dataset(test_imgs_t, test_labels_raw);
 
@@ -255,13 +297,16 @@ fn main() -> anyhow::Result<()> {
         .build(test_dataset);
 
     println!("Constructing model...");
-    let model = CnnModel::new(&device);
+    let mut model = CnnModel::new(&device);
 
-    // Note: Training with gradient descent requires AutodiffBackend (e.g., Autodiff<NdArray>)
-    // This example demonstrates the model structure and forward pass only
+    // Optimizer
+    let config_optimizer = AdamConfig::new();
+    let mut optimizer = config_optimizer.init();
 
     // training loop
-    let epochs = 3usize;
+    let epochs = 1usize;
+    let lr = 1e-3;
+
     for epoch in 1..=epochs {
         println!("Epoch {}/{}", epoch, epochs);
         let pb = ProgressBar::new(60000 / batch_size as u64); // MNIST train set size
@@ -273,17 +318,15 @@ fn main() -> anyhow::Result<()> {
             let logits = model.forward(images_batch.clone());
 
             // Loss computation using cross entropy
-            // In Burn v0.19, we need to use the loss module directly
-            let labels_squeezed = labels_batch.clone().squeeze::<1>(); // Convert from [B, 1] to [B]
-
-            // Use cross entropy loss from nn module
+            let labels_squeezed = labels_batch.clone().squeeze::<1>();
             let loss_config = nn::loss::CrossEntropyLossConfig::new();
             let loss_fn = loss_config.init(&device);
-            let _loss = loss_fn.forward(logits.clone(), labels_squeezed.clone());
+            let loss = loss_fn.forward(logits.clone(), labels_squeezed.clone());
 
-            // Note: Manual backward pass and optimization would go here
-            // However, Burn v0.19's autodiff requires specific backend setup
-            // For now, this is a simplified version showing the structure
+            // Backward pass
+            let grads = loss.backward();
+            let grads = burn::optim::GradientsParams::from_grads(grads, &model);
+            model = optimizer.step(lr, model, grads);
 
             pb.inc(1);
         }
@@ -291,26 +334,35 @@ fn main() -> anyhow::Result<()> {
 
         // Validation pass
         println!("Running validation...");
+        let mut correct = 0;
+        let mut total = 0;
 
         for batch in test_loader.iter() {
             let (images_batch, labels_batch) = batch;
             let logits = model.forward(images_batch);
+            let predictions = logits.argmax(1).squeeze::<1>();
+            let targets = labels_batch.clone().squeeze::<1>();
 
-            // Get predictions (not using them for now)
-            let _predictions = logits.argmax(1);
-            let _dims = labels_batch.dims()[0];
+            let equal = predictions.equal(targets);
+            // Count correct (simplified, might need casting)
+            let equal_int = equal.int();
+            let sum_correct = equal_int.sum().into_scalar();
 
-            // Note: Actual accuracy computation would require comparing tensors
-            // This is a placeholder for the validation logic
+            correct += sum_correct as usize;
+            total += labels_batch.dims()[0];
         }
 
-        println!("Epoch {} completed", epoch);
+        println!(
+            "Epoch {} completed. Accuracy: {:.2}%",
+            epoch,
+            100.0 * correct as f64 / total as f64
+        );
     }
 
     println!("Training finished.");
-    println!("Note: This is a simplified training loop. For full autodiff support,");
-    println!("please use Burn's AutodiffBackend (e.g., Autodiff<NdArray>) and");
-    println!("implement proper gradient computation and parameter updates.");
+
+    // Inference
+    infer_image(&model, "digit.png", &device);
 
     Ok(())
 }
