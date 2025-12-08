@@ -164,7 +164,7 @@ xcode-select --install
 
 ```bash
 # Clone the repository
-git clone [<repository-url>](https://github.com/bendo01/cnn)
+git clone https://github.com/bendo01/cnn
 cd cnn
 
 # Build the project in release mode (optimized)
