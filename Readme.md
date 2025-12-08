@@ -79,7 +79,7 @@ Download and install from [https://git-scm.com/download/win](https://git-scm.com
 
 ```powershell
 # Clone the repository
-git clone <repository-url>
+git clone git@github.com:bendo01/cnn.git
 cd cnn
 
 # Build the project
@@ -164,7 +164,7 @@ xcode-select --install
 
 ```bash
 # Clone the repository
-git clone https://github.com/bendo01/cnn
+git clone git@github.com:bendo01/cnn.git
 cd cnn
 
 # Build the project in release mode (optimized)
